@@ -104,6 +104,13 @@ impl Exif {
         crate::makernotes::image_unique_id(self, ifd_num)
     }
 
+    /// Returns standard EXIF LensModel, or the Phase One MakerNotes lens model.
+    /// Vendor fields remain separate from `fields()`. Malformed supported
+    /// MakerNotes return an error; unsupported MakerNotes return `None`.
+    pub fn lens_model(&self, ifd_num: In) -> Result<Option<String>, crate::Error> {
+        crate::makernotes::lens_model(self, ifd_num)
+    }
+
     /// Returns the decoded fields of the directly referenced TIFF SubIFDs.
     ///
     /// This experimental API keeps each child image in a separate vector,

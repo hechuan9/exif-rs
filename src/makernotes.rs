@@ -282,3 +282,65 @@ mod tests {
     }
 
 }
+
+pub(crate) fn lens_model(exif: &Exif, ifd: In) -> Result<Option<String>, Error> {
+    use crate::{Tag, Value};
+    if let Some(Value::Ascii(values)) = exif.get_field(Tag::LensModel, ifd).map(|f| &f.value) {
+        if let Some(value) = values.first() {
+            if let Some(value) = text(value)? { return Ok(Some(value)); }
+        }
+    }
+    match exif.get_field(Tag::MakerNote, ifd).map(|f| &f.value) {
+        Some(Value::Undefined(data, _)) => phase_one_lens(data),
+        _ => Ok(None),
+    }
+}
+
+fn phase_one_lens(data: &[u8]) -> Result<Option<String>, Error> {
+    let le = if data.starts_with(b"IIII") { true }
+        else if data.starts_with(b"MMMM") { false }
+        else { return Ok(None); };
+    let signature = bytes(data, 4, 4)?;
+    if (le && &signature[1..] != b"waR") || (!le && &signature[..3] != b"Raw") {
+        return Ok(None);
+    }
+    let start = u32_at(data, 8, le)? as usize;
+    let count = u32_at(data, start, le)? as usize;
+    let begin = start.checked_add(8).ok_or_else(invalid)?;
+    bytes(data, begin, count.checked_mul(16).ok_or_else(invalid)?)?;
+    for index in 0..count {
+        let entry = begin + index * 16;
+        if u32_at(data, entry, le)? != 0x0412 { continue; }
+        let size = u32_at(data, entry + 8, le)? as usize;
+        let offset = if size > 4 { u32_at(data, entry + 12, le)? as usize } else { entry + 12 };
+        return text(bytes(data, offset, size)?);
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod phase_one_tests {
+    use super::*;
+    #[test]
+    fn little_and_big_endian_lens_and_truncation() {
+        for le in [true, false] {
+            let mut data = vec![0; 48];
+            data[..8].copy_from_slice(if le { b"IIIICwaR" } else { b"MMMMRawC" });
+            let put = |data: &mut [u8], at, value: u32| {
+                data[at..at+4].copy_from_slice(&if le { value.to_le_bytes() } else { value.to_be_bytes() });
+            };
+            put(&mut data, 8, 12);
+            put(&mut data, 12, 1);
+            put(&mut data, 20, 0x0412);
+            put(&mut data, 24, 1);
+            put(&mut data, 28, 12);
+            put(&mut data, 32, 36);
+            data[36..].copy_from_slice(b"Test lens 1\0");
+            assert_eq!(phase_one_lens(&data).unwrap().as_deref(), Some("Test lens 1"));
+            for end in 4..data.len() { assert!(phase_one_lens(&data[..end]).is_err()); }
+            put(&mut data, 20, 0x0400);
+            assert_eq!(phase_one_lens(&data).unwrap(), None);
+        }
+        assert_eq!(phase_one_lens(b"unknown").unwrap(), None);
+    }
+}
