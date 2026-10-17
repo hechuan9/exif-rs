@@ -586,6 +586,28 @@ mod tests {
     }
 
     #[test]
+    fn primary_dimensions_do_not_require_exif_or_apply_rotation() {
+        let mut ispe = vec![0; 4];
+        ispe.extend_from_slice(&1200u32.to_be_bytes());
+        ispe.extend_from_slice(&800u32.to_be_bytes());
+        let mut ipco = sized_box(b"ispe", &ispe);
+        // irot is a one-byte property: one counter-clockwise quarter turn.
+        ipco.extend(sized_box(b"irot", &[1]));
+        let mut iprp = sized_box(b"ipco", &ipco);
+        iprp.extend(sized_box(b"ipma", &[0, 0, 0, 0, 0, 0, 0, 1,
+                                               0, 14, 2, 1, 0x82]));
+        let mut meta = vec![0; 4];
+        meta.extend(sized_box(b"pitm", &[0, 0, 0, 0, 0, 14]));
+        meta.extend(sized_box(b"iprp", &iprp));
+        let mut bytes = sized_box(b"ftyp", b"mif1\0\0\0\0mif1");
+        bytes.extend(sized_box(b"meta", &meta));
+        assert!(matches!(get_exif_attr(&mut Cursor::new(&bytes)),
+                         Err(Error::NotFound(_))));
+        assert_eq!(get_primary_image_dimensions(&mut Cursor::new(&bytes)).unwrap(),
+                   (1200, 800));
+    }
+
+    #[test]
     fn primary_dimensions_reject_missing_and_truncated_associations() {
         let bytes = dimensions_fixture(false, false, false);
         assert!(matches!(get_primary_image_dimensions(&mut Cursor::new(bytes)),
