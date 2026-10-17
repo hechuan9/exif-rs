@@ -66,6 +66,122 @@ where R: BufRead + Seek {
     }
 }
 
+/// Reads the stored spatial extent of the HEIF primary image item.
+///
+/// This is container metadata, not an Exif field. Rotation and cropping
+/// properties are not applied. An image without a primary-item `ispe`
+/// association returns `Error::NotFound`.
+/// The reader must be positioned at the start of the file.
+pub fn get_primary_image_dimensions<R>(reader: &mut R) -> Result<(u32, u32), Error>
+where R: BufRead + Seek {
+    let mut parser = Parser::new(reader);
+    while let Some((size, kind)) = parser.read_box_header()? {
+        match &kind {
+            b"ftyp" => {
+                let data = parser.read_file_level_box(size)?;
+                parser.parse_ftyp(BoxSplitter::new(&data))?;
+                parser.ftyp_checked = true;
+            },
+            b"meta" => {
+                if !parser.ftyp_checked {
+                    return Err("MetaBox found before FileTypeBox".into());
+                }
+                let data = parser.read_file_level_box(size)?;
+                return primary_dimensions(BoxSplitter::new(&data));
+            },
+            _ => parser.skip_file_level_box(size)?,
+        }
+    }
+    Err(Error::NotFound("HEIF primary image dimensions"))
+}
+
+fn primary_dimensions(mut meta: BoxSplitter) -> Result<(u32, u32), Error> {
+    if meta.fullbox_header()? != (0, 0) {
+        return Err("Unsupported MetaBox version or flags".into());
+    }
+    let mut primary = None;
+    let mut properties = None;
+    while !meta.is_empty() {
+        let (kind, mut child) = meta.child_box()?;
+        match kind {
+            b"pitm" => {
+                let (version, flags) = child.fullbox_header()?;
+                if flags != 0 || primary.is_some() {
+                    return Err("Invalid primary item box".into());
+                }
+                primary = Some(match version {
+                    0 => u32::from(child.uint16()?),
+                    1 => child.uint32()?,
+                    _ => return Err("Unsupported primary item version".into()),
+                });
+            },
+            b"iprp" => {
+                if properties.is_some() {
+                    return Err("Duplicate item properties box".into());
+                }
+                properties = Some(child);
+            },
+            _ => {},
+        }
+    }
+    let primary = primary.ok_or(Error::NotFound("HEIF primary image item"))?;
+    let mut properties = properties.ok_or(Error::NotFound("HEIF item properties"))?;
+    let mut property_boxes = None;
+    let mut indices = Vec::new();
+    while !properties.is_empty() {
+        let (kind, mut child) = properties.child_box()?;
+        match kind {
+            b"ipco" => {
+                if property_boxes.is_some() {
+                    return Err("Duplicate item property container".into());
+                }
+                let mut boxes = Vec::new();
+                while !child.is_empty() { boxes.push(child.child_box()?); }
+                property_boxes = Some(boxes);
+            },
+            b"ipma" => primary_property_indices(child, primary, &mut indices)?,
+            _ => {},
+        }
+    }
+    let boxes = property_boxes.ok_or(Error::NotFound("HEIF item properties"))?;
+    let mut dimensions = None;
+    for index in indices {
+        if index == 0 { continue; }
+        let (kind, body) = boxes.get(index - 1).ok_or("Invalid item property index")?;
+        if *kind != b"ispe" { continue; }
+        let mut body = BoxSplitter::new(body.inner);
+        if body.fullbox_header()? != (0, 0) {
+            return Err("Unsupported spatial extents version or flags".into());
+        }
+        let size = (body.uint32()?, body.uint32()?);
+        if size.0 == 0 || size.1 == 0 || dimensions.is_some() {
+            return Err("Invalid primary image spatial extents".into());
+        }
+        dimensions = Some(size);
+    }
+    dimensions.ok_or(Error::NotFound("HEIF primary image dimensions"))
+}
+
+fn primary_property_indices(mut data: BoxSplitter, primary: u32,
+                            indices: &mut Vec<usize>) -> Result<(), Error> {
+    let (version, flags) = data.fullbox_header()?;
+    if version > 1 || flags & !1 != 0 {
+        return Err("Unsupported item association version or flags".into());
+    }
+    for _ in 0..data.uint32()? {
+        let item = if version == 0 { u32::from(data.uint16()?) }
+                   else { data.uint32()? };
+        let count = data.slice(1)?[0];
+        for _ in 0..count {
+            let index = if flags & 1 != 0 { usize::from(data.uint16()? & 0x7fff) }
+                        else { usize::from(data.slice(1)?[0] & 0x7f) };
+            if item == primary { indices.push(index); }
+        }
+    }
+    if !data.is_empty() { return Err("Trailing item association data".into()); }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Parser<R> {
     reader: R,
@@ -417,6 +533,68 @@ impl<'a> BoxSplitter<'a> {
 mod tests {
     use std::io::Cursor;
     use super::*;
+
+    fn sized_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut out = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn dimensions_fixture(wide_id: bool, wide_index: bool, linked: bool) -> Vec<u8> {
+        let id: u32 = if wide_id { 70000 } else { 14 };
+        let mut pitm = vec![wide_id as u8, 0, 0, 0];
+        if wide_id { pitm.extend_from_slice(&id.to_be_bytes()); }
+        else { pitm.extend_from_slice(&(id as u16).to_be_bytes()); }
+        let mut ipco = Vec::new();
+        for (width, height) in [(320u32, 240u32), (11656, 8742)] {
+            let mut ispe = vec![0; 4];
+            ispe.extend_from_slice(&width.to_be_bytes());
+            ispe.extend_from_slice(&height.to_be_bytes());
+            ipco.extend(sized_box(b"ispe", &ispe));
+            if wide_index && width == 320 {
+                for _ in 0..128 { ipco.extend(sized_box(b"free", &[])); }
+            }
+        }
+        let mut ipma = vec![wide_id as u8, 0, 0, wide_index as u8];
+        ipma.extend_from_slice(&1u32.to_be_bytes());
+        if wide_id { ipma.extend_from_slice(&id.to_be_bytes()); }
+        else { ipma.extend_from_slice(&(id as u16).to_be_bytes()); }
+        ipma.push(1);
+        let index = if !linked { 0u16 } else if wide_index { 130 } else { 2 };
+        if wide_index { ipma.extend_from_slice(&(index | 0x8000).to_be_bytes()); }
+        else { ipma.push(index as u8 | 0x80); }
+        let mut iprp = sized_box(b"ipco", &ipco);
+        iprp.extend(sized_box(b"ipma", &ipma));
+        let mut meta = vec![0; 4];
+        meta.extend(sized_box(b"pitm", &pitm));
+        meta.extend(sized_box(b"iprp", &iprp));
+        let mut file = sized_box(b"ftyp", b"mif1\0\0\0\0mif1");
+        file.extend(sized_box(b"meta", &meta));
+        file
+    }
+
+    #[test]
+    fn primary_dimensions_follow_item_associations() {
+        for wide_id in [false, true] {
+            for wide_index in [false, true] {
+                let bytes = dimensions_fixture(wide_id, wide_index, true);
+                assert_eq!(get_primary_image_dimensions(&mut Cursor::new(bytes)).unwrap(),
+                           (11656, 8742));
+            }
+        }
+    }
+
+    #[test]
+    fn primary_dimensions_reject_missing_and_truncated_associations() {
+        let bytes = dimensions_fixture(false, false, false);
+        assert!(matches!(get_primary_image_dimensions(&mut Cursor::new(bytes)),
+                         Err(Error::NotFound(_))));
+        let bytes = dimensions_fixture(true, true, true);
+        for length in 0..bytes.len() {
+            assert!(get_primary_image_dimensions(&mut Cursor::new(&bytes[..length])).is_err());
+        }
+    }
 
     #[test]
     fn extract() {

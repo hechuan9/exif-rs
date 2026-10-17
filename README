@@ -42,6 +42,14 @@ TIFF SubIFDs
    the first image nor the largest dimensions universally identify a
    primary image.
 
+HEIF primary image dimensions (fork extension)
+----------------------------------------------
+
+   experimental::get_heif_primary_image_dimensions reads the stored
+   spatial extent associated with the primary HEIF item. This is container
+   metadata, not a synthesized Exif field. Rotation and cropping are not
+   applied. The reader must be positioned at the start of the file.
+
 Dependencies
 ------------
 

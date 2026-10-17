@@ -101,6 +101,7 @@ pub use value::{Rational, SRational};
 
 /// The interfaces in this module are experimental and unstable.
 pub mod experimental {
+    pub use crate::isobmff::get_primary_image_dimensions as get_heif_primary_image_dimensions;
     pub use crate::writer::Writer;
 }
 
