@@ -323,18 +323,23 @@ impl Parser {
 // separate from the parent, and their TIFF offsets still refer to the same buffer.
 pub(crate) fn parse_sub_ifds(data: &[u8], little_endian: bool,
                              offsets: &[u32]) -> Result<Vec<Vec<Field>>, Error> {
-    let mut children = Vec::new();
-    for &offset in offsets {
-        let mut parser = Parser::new();
-        if little_endian {
-            parser.parse_ifd::<LittleEndian>(data, offset as usize, Context::Tiff, 0)?;
-        } else {
-            parser.parse_ifd::<BigEndian>(data, offset as usize, Context::Tiff, 0)?;
-        }
-        children.push(parser.entries.into_iter()
-            .map(|entry| entry.into_field(data, little_endian)).collect());
+    offsets.iter().map(|&offset| {
+        parse_ifd_context(data, little_endian, offset, Context::Tiff)
+    }).collect()
+}
+
+// CR3 stores EXIF and GPS roots in separate TIFF sections. Parse their actual
+// namespace so context-specific directory pointers are followed correctly.
+pub(crate) fn parse_ifd_context(data: &[u8], little_endian: bool,
+                               offset: u32, context: Context) -> Result<Vec<Field>, Error> {
+    let mut parser = Parser::new();
+    if little_endian {
+        parser.parse_ifd::<LittleEndian>(data, offset as usize, context, 0)?;
+    } else {
+        parser.parse_ifd::<BigEndian>(data, offset as usize, context, 0)?;
     }
-    Ok(children)
+    Ok(parser.entries.into_iter()
+        .map(|entry| entry.into_field(data, little_endian)).collect())
 }
 
 pub fn is_tiff(buf: &[u8]) -> bool {

@@ -95,6 +95,15 @@ impl Exif {
         self.little_endian
     }
 
+    /// Returns the image identifier from standard EXIF, or supported MakerNotes.
+    ///
+    /// Standard `ImageUniqueID` takes precedence. Canon and Apple MakerNotes
+    /// are supported; other manufacturers return `None`. Recognized malformed
+    /// MakerNotes return an error. This does not add vendor fields to `fields()`.
+    pub fn image_unique_id(&self, ifd_num: In) -> Result<Option<String>, crate::Error> {
+        crate::makernotes::image_unique_id(self, ifd_num)
+    }
+
     /// Returns the decoded fields of the directly referenced TIFF SubIFDs.
     ///
     /// This experimental API keeps each child image in a separate vector,

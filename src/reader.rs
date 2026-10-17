@@ -32,6 +32,7 @@ use crate::exifimpl::Exif;
 use crate::isobmff;
 use crate::jpeg;
 use crate::png;
+use crate::raw;
 use crate::tiff;
 use crate::webp;
 
@@ -118,7 +119,13 @@ impl Reader {
     /// If an error occurred, `exif::Error` is returned.
     ///
     /// Supported formats are:
-    /// - TIFF and some RAW image formats based on it
+    /// - TIFF and some RAW image formats based on it, including Olympus ORF
+    /// - Minolta MRW, Fujifilm RAF and Panasonic RW2 embedded EXIF
+    ///
+    /// RAF and RW2 EXIF belongs to the embedded preview. Its dimensions must
+    /// not be treated as sensor dimensions; see `experimental::read_raw_dimensions`.
+    /// CR3 and legacy CIFF/Kyocera metadata use the separate experimental RAW APIs.
+    ///
     /// - JPEG
     /// - HEIF and coding-specific variations including HEIC and AVIF
     /// - PNG
@@ -132,6 +139,15 @@ impl Reader {
         reader.by_ref().take(4096).read_to_end(&mut buf)?;
         if tiff::is_tiff(&buf) {
             reader.read_to_end(&mut buf)?;
+        } else if buf.starts_with(b"IIRO") || buf.starts_with(b"IIRS") || buf.starts_with(b"MMOR") {
+            // ORF uses TIFF directories with an Olympus-specific header magic.
+            // Normalize only the parser's in-memory copy, never the source.
+            reader.read_to_end(&mut buf)?;
+            if buf[0] == b'I' { buf[2..4].copy_from_slice(&[42, 0]); }
+            else { buf[2..4].copy_from_slice(&[0, 42]); }
+        } else if raw::is_raw(&buf) {
+            reader.seek(io::SeekFrom::Start(0))?;
+            buf = raw::get_exif(reader)?;
         } else if jpeg::is_jpeg(&buf) {
             buf = jpeg::get_exif_attr(&mut buf.chain(reader))?;
         } else if png::is_png(&buf) {

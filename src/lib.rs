@@ -101,6 +101,7 @@ pub use value::{Rational, SRational};
 
 /// The interfaces in this module are experimental and unstable.
 pub mod experimental {
+    pub use crate::raw::{read_ari_metadata, AriMetadata, read_cr3_metadata, read_legacy_raw_metadata, read_raw_dimensions, Cr3Metadata, LegacyRawMetadata, RawDimensions};
     pub use crate::isobmff::get_primary_image_dimensions as get_heif_primary_image_dimensions;
     pub use crate::writer::Writer;
 }
@@ -115,8 +116,10 @@ mod error;
 mod exifimpl;
 mod isobmff;
 mod jpeg;
+mod makernotes;
 mod png;
 mod reader;
+mod raw;
 mod tag;
 mod tiff;
 mod util;

@@ -50,6 +50,42 @@ HEIF primary image dimensions (fork extension)
    metadata, not a synthesized Exif field. Rotation and cropping are not
    applied. The reader must be positioned at the start of the file.
 
+RAW containers and camera identity (fork extensions)
+----------------------------------------------------
+
+   Reader::read_from_container also extracts embedded EXIF from Minolta
+   MRW (TTW), Fujifilm RAF (JPEG), Panasonic RW2 (JPEG), and Olympus ORF
+   TIFF directories. RAF/RW2 EXIF dimensions describe the preview, not
+   necessarily the raw sensor. Use experimental::read_raw_dimensions
+   separately for recorded full/cropped RAF or RW2 sensor extents.
+
+   ARI, CR3, CRW and Kyocera RAW do not use that Reader entry point:
+
+      let ari = exif::experimental::read_ari_metadata(&mut reader)?;
+      // ARI camera model and stored image dimensions only; no capture date.
+
+      let cr3 = exif::experimental::read_cr3_metadata(&mut reader)?;
+      let id = cr3.image_unique_id()?;
+      // cr3.fields contains standard TIFF, EXIF and GPS fields.
+      // cr3.maker_notes retains the independent Canon CMT3 TIFF bytes.
+
+      let legacy = exif::experimental::read_legacy_raw_metadata(&mut reader)?;
+      // CIFF (CRW): camera, timestamp, valid timezone, image dimensions.
+      // Kyocera: camera and local capture-time text from its native header.
+
+   CR3 follows the declared Canon UUID/CMT boxes. CMT2 and CMT4 are parsed
+   in their EXIF and GPS namespaces, including their pointer directories.
+   Legacy native values remain separate from EXIF tags; the CIFF numeric
+   timestamp does not by itself establish a UTC instant.
+
+   Exif::image_unique_id(In::PRIMARY) prefers standard ImageUniqueID and
+   otherwise reads supported Canon/Apple MakerNotes. CR3's corresponding
+   method reads standard EXIF first, then Canon CMT3. Other MakerNotes are
+   not interpreted as identity sources. These APIs are read-only and do
+   not imply full vendor metadata, RAW pixel decoding, or universal RAW
+   format support. Missing metadata returns None/NotFound; malformed
+   recognized structures return an error.
+
 Dependencies
 ------------
 
